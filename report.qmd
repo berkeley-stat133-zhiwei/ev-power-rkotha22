@@ -8,16 +8,70 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(tidyverse)
+library(readr)
+library(sf)
+library(maps)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: How has the share of renewable energy changed from 2021 to 2023 across states?
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+
+# Read total use files
+
+tot21_raw <- read_csv("data/total-use-2021.csv", show_col_types = FALSE)
+tot22_raw <- read_csv("data/total-use-2022.csv", show_col_types = FALSE)
+tot23_raw <- read_csv("data/total-use-2023.csv", show_col_types = FALSE)
+num <- function(x) readr::parse_number(as.character(x))
+
+collapse_total <- function(df, year) {
+state_cols <- setdiff(names(df), "Energy_Source")
+df |>
+select(all_of(state_cols)) |>
+summarise(across(everything(), ~ sum(.x, na.rm = TRUE))) |>
+pivot_longer(everything(), names_to = "State", values_to = "Total_Use") |>
+mutate(Year = year)
+}
+
+total_all <- bind_rows(
+collapse_total(tot21_raw, 2021),
+collapse_total(tot22_raw, 2022),
+collapse_total(tot23_raw, 2023)
+)
+
+# Read renewable use files
+
+ren21_raw <- read_csv("data/renew-use-2021.csv", show_col_types = FALSE)
+ren22_raw <- read_csv("data/renew-use-2022.csv", show_col_types = FALSE)
+ren23_raw <- read_csv("data/renew-use-2023.csv", show_col_types = FALSE)
+
+collapse_renew <- function(df, year) {
+val_col <- names(df)[str_detect(names(df), "^Renewable_Use_")]
+df |>
+mutate(Value = num(.data[[val_col]])) |>
+group_by(State) |>
+summarise(Renewable_Use = sum(Value, na.rm = TRUE), .groups = "drop") |>
+mutate(Year = year)
+}
+
+renew_all <- bind_rows(
+collapse_renew(ren21_raw, 2021),
+collapse_renew(ren22_raw, 2022),
+collapse_renew(ren23_raw, 2023)
+)
+
+# Combine and calculate percent renewable
+
+energy <- total_all |>
+inner_join(renew_all, by = c("State", "Year")) |>
+mutate(Pct_Renewable = 100 * Renewable_Use / Total_Use)
+
+head(energy)
 
 ```
 
@@ -25,10 +79,72 @@ Chosen Question:
 
 ```{r}
 
+# Change in renewable share 2021 -> 2023
+
+pct_change <- energy |>
+select(State, Year, Pct_Renewable) |>
+pivot_wider(names_from = Year, values_from = Pct_Renewable) |>
+mutate(Change_2021_to_2023 = `2023` - `2021`) |>
+arrange(desc(Change_2021_to_2023))
+
+top_increase <- pct_change |> slice_max(Change_2021_to_2023, n = 10)
+top_decrease <- pct_change |> slice_min(Change_2021_to_2023, n = 10)
+
+top_increase
+top_decrease
+
+# Bar plots
+
+ggplot(top_increase, aes(x = reorder(State, Change_2021_to_2023), y = Change_2021_to_2023)) +
+geom_col(fill = "seagreen3") +
+coord_flip() +
+labs(title = "Top 10 Increases in Renewable Share (2021–2023)",
+x = "State", y = "Change in Percentage Points")
+
+ggplot(top_decrease, aes(x = reorder(State, Change_2021_to_2023), y = Change_2021_to_2023)) +
+geom_col(fill = "tomato") +
+coord_flip() +
+labs(title = "Top 10 Decreases in Renewable Share (2021–2023)",
+x = "State", y = "Change in Percentage Points")
+
+# Summary statistics
+
+pct_change |>
+summarise(
+mean_change = mean(Change_2021_to_2023, na.rm = TRUE),
+median_change = median(Change_2021_to_2023, na.rm = TRUE)
+)
+
 ```
+
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
 
+us_poly <- maps::map("state", plot = FALSE, fill = TRUE)
+us_sf <- sf::st_as_sf(us_poly)
+
+key_tbl <- tibble(State = state.abb, state_name_lower = tolower(state.name))
+
+map_2023 <- energy |>
+filter(Year == 2023) |>
+left_join(key_tbl, by = "State") |>
+rename(ID = state_name_lower)
+
+map_sf <- us_sf |>
+left_join(map_2023, by = c("ID" = "ID"))
+
+ggplot(map_sf) +
+geom_sf(aes(fill = Pct_Renewable), color = "white", linewidth = 0.1) +
+scale_fill_viridis_c(option = "C", na.value = "grey80") +
+labs(title = "Share of Renewable Energy by State (2023)",
+fill = "% Renewable") +
+theme_minimal()
+
 ```
+
+
+Part 5:
+
+The results show that some states increased their use of renewable energy more than others from 2021 to 2023. States like California and Washington saw strong growth, while some central and southern states changed very little. The bar charts make it easy to see which states had the biggest increases or decreases, and the map shows where renewable energy use is highest across the country. Overall, renewable energy is growing, but not evenly in every region.
